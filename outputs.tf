@@ -1,29 +1,24 @@
-output "client_id" {
-  description = "Client (application) ID of the user-assigned identity."
-  value       = azapi_resource.this.output.properties.clientId
-}
-
-output "federated_identity_credential_resource_ids" {
-  description = "Resource IDs of the federated identity credentials, by credential name."
-  value       = { for name, credential in module.federated_identity_credential : name => credential.resource_id }
+output "dns_name" {
+  description = "The bastion host's DNS name, as Azure reports it; null if Azure reports none."
+  value       = try(azapi_resource.this.output.properties.dnsName, null)
 }
 
 output "name" {
-  description = "Name of the user-assigned identity."
+  description = "Name of the bastion host."
   value       = azapi_resource.this.name
 }
 
-output "principal_id" {
-  description = "Object (principal) ID of the user-assigned identity's service principal."
-  value       = azapi_resource.this.output.properties.principalId
+output "public_ip_address" {
+  description = "IP address of the public IP address the module creates; null when it creates none."
+  value       = one(module.public_ip[*].ip_address)
+}
+
+output "public_ip_address_id" {
+  description = "Resource ID of the bastion host's public IP address, created or given; null for `Developer` and private-only."
+  value       = local.public_ip_id
 }
 
 output "resource_id" {
-  description = "Resource ID of the user-assigned identity."
+  description = "Resource ID of the bastion host."
   value       = azapi_resource.this.id
-}
-
-output "tenant_id" {
-  description = "Tenant ID of the user-assigned identity."
-  value       = azapi_resource.this.output.properties.tenantId
 }

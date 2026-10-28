@@ -1,9 +1,14 @@
-output "principal_id" {
-  description = "Object ID of the identity's service principal."
-  value       = module.user_assigned_identity.principal_id
+output "dns_name" {
+  description = "The bastion host's DNS name."
+  value       = module.bastion.dns_name
+}
+
+output "public_ip_address" {
+  description = "The bastion host's public IP address."
+  value       = module.bastion.public_ip_address
 }
 
 output "resource_id" {
-  description = "Resource ID of the user-assigned identity."
-  value       = module.user_assigned_identity.resource_id
+  description = "Resource ID of the bastion host."
+  value       = module.bastion.resource_id
 }
