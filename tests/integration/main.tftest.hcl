@@ -1,7 +1,8 @@
 # Real Azure, no mocks: ARM_SUBSCRIPTION_ID=<test subscription> terraform test -test-directory=tests/integration
-# Proves what mocks cannot: credentials written in parallel are serialised, survive an update of the
-# identity, can be removed or updated in place under the lock (ReadOnly too), and the lock is removed
-# before everything else on destroy.
+# A dedicated bastion host in zones, created as Basic with a public IP address, then upgraded to Standard
+# with every Standard feature on, then with every feature off again, all under a lock. Proves the
+# upgrade happens in place and that turning a feature off reaches Azure. Each write takes about ten
+# minutes.
 
 run "setup" {
   module {
@@ -11,191 +12,156 @@ run "setup" {
 
 run "create" {
   variables {
-    name      = "id-mlz-it-${run.setup.suffix}"
+    name      = "bas-mlz-bas-${run.setup.suffix}"
     parent_id = run.setup.resource_group_id
     location  = run.setup.location
-    federated_identity_credentials = {
-      one   = { issuer = "https://token.actions.githubusercontent.com", subject = "repo:example-org/example-repo:environment:one" }
-      two   = { issuer = "https://token.actions.githubusercontent.com", subject = "repo:example-org/example-repo:environment:two" }
-      three = { issuer = "https://token.actions.githubusercontent.com", subject = "repo:example-org/example-repo:environment:three" }
+    sku       = "Basic"
+    zones     = ["1", "2", "3"]
+    ip_configuration = {
+      subnet_id = run.setup.bastion_subnet_id
+      public_ip = { name = "pip-mlz-bas-${run.setup.suffix}" }
     }
     lock = { kind = "CanNotDelete" }
     role_assignments = {
       reader = { role_definition_id_or_name = "Reader", principal_id = run.setup.object_id }
     }
+    diagnostic_settings = {
+      workspace = {
+        workspace_resource_id = run.setup.workspace_id
+        logs                  = [{ category = "BastionAuditLogs" }]
+        metrics               = [{ category = "AllMetrics" }]
+      }
+    }
   }
 
   assert {
-    condition     = length(output.federated_identity_credential_resource_ids) == 3
-    error_message = "All three credentials should be created."
-  }
-  assert {
-    condition     = can(regex("^[0-9a-f-]{36}$", output.principal_id)) && can(regex("^[0-9a-f-]{36}$", output.client_id))
-    error_message = "principal_id and client_id should be read back from Azure."
+    condition     = output.public_ip_address != null && output.public_ip_address_id != null && output.dns_name != null
+    error_message = "The public IP address and the DNS name should be read back from Azure."
   }
 }
 
-run "update_identity" {
-  variables {
-    name      = "id-mlz-it-${run.setup.suffix}"
-    parent_id = run.setup.resource_group_id
-    location  = run.setup.location
-    federated_identity_credentials = {
-      one   = { issuer = "https://token.actions.githubusercontent.com", subject = "repo:example-org/example-repo:environment:one" }
-      two   = { issuer = "https://token.actions.githubusercontent.com", subject = "repo:example-org/example-repo:environment:two" }
-      three = { issuer = "https://token.actions.githubusercontent.com", subject = "repo:example-org/example-repo:environment:three" }
-    }
-    lock = { kind = "CanNotDelete" }
-    role_assignments = {
-      reader = { role_definition_id_or_name = "Reader", principal_id = run.setup.object_id }
-    }
-    isolation_scope = "Regional"
-    tags            = { updated = "true" } # a PUT of the identity without its credentials
-  }
-
-  assert {
-    condition     = azapi_resource.this.tags == tomap({ updated = "true" })
-    error_message = "The identity should be updated in place."
-  }
-}
-
-run "credentials_survive" {
+run "created_in_azure" {
   module {
     source = "./tests/integration/read"
   }
 
   variables {
-    credential_ids = run.update_identity.federated_identity_credential_resource_ids
+    bastion_id = run.create.resource_id
   }
 
   assert {
-    condition     = output.subjects.two == "repo:example-org/example-repo:environment:two" && length(output.subjects) == 3
-    error_message = "The credentials should still exist after the identity was updated."
+    condition     = output.sku == "Basic" && output.properties.scaleUnits == 2 && jsonencode(output.zones) == jsonencode(["1", "2", "3"])
+    error_message = "Azure should report a Basic bastion host with two scale units in zones 1, 2 and 3."
   }
 }
 
-run "isolation_scope_set_in_azure" {
-  module {
-    source = "./tests/integration/read_identity"
-  }
-
+run "upgrade_to_standard" {
+  # In place under the lock: Basic, Standard and Premium share their infrastructure.
   variables {
-    identity_id = run.update_identity.resource_id
-  }
-
-  assert {
-    condition     = output.isolation_scope == "Regional"
-    error_message = "Azure should report the Regional isolation scope set by update_identity."
-  }
-}
-
-run "remove_credential_under_lock" {
-  # A credential is deleted while the lock stays configured: the lock is removed and created again
-  # around the change. The scope goes back to Azure's default, which must reach Azure.
-  variables {
-    name      = "id-mlz-it-${run.setup.suffix}"
+    name      = "bas-mlz-bas-${run.setup.suffix}"
     parent_id = run.setup.resource_group_id
     location  = run.setup.location
-    federated_identity_credentials = {
-      one = { issuer = "https://token.actions.githubusercontent.com", subject = "repo:example-org/example-repo:environment:one" }
-      two = { issuer = "https://token.actions.githubusercontent.com", subject = "repo:example-org/example-repo:environment:two" }
+    sku       = "Standard"
+    zones     = ["1", "2", "3"]
+    ip_configuration = {
+      subnet_id = run.setup.bastion_subnet_id
+      public_ip = { name = "pip-mlz-bas-${run.setup.suffix}" }
     }
-    lock = { kind = "CanNotDelete" }
+    copy_paste_enabled     = false
+    file_copy_enabled      = true
+    ip_connect_enabled     = true
+    kerberos_enabled       = true
+    shareable_link_enabled = true
+    tunneling_enabled      = true
+    scale_units            = 3
+    lock                   = { kind = "CanNotDelete" }
     role_assignments = {
       reader = { role_definition_id_or_name = "Reader", principal_id = run.setup.object_id }
     }
-  }
-
-  assert {
-    condition     = keys(output.federated_identity_credential_resource_ids) == ["one", "two"] && module.interfaces.lock_resource_id != null
-    error_message = "The third credential should be gone and the lock back."
-  }
-}
-
-run "isolation_scope_reset_in_azure" {
-  module {
-    source = "./tests/integration/read_identity"
-  }
-
-  variables {
-    identity_id = run.remove_credential_under_lock.resource_id
-  }
-
-  assert {
-    condition     = output.isolation_scope == "None"
-    error_message = "Azure should report the default isolation scope again once isolation_scope is no longer set."
-  }
-}
-
-run "readonly_lock" {
-  variables {
-    name      = "id-mlz-it-${run.setup.suffix}"
-    parent_id = run.setup.resource_group_id
-    location  = run.setup.location
-    federated_identity_credentials = {
-      one = { issuer = "https://token.actions.githubusercontent.com", subject = "repo:example-org/example-repo:environment:one" }
-      two = { issuer = "https://token.actions.githubusercontent.com", subject = "repo:example-org/example-repo:environment:two" }
-    }
-    lock = { kind = "ReadOnly" }
-    role_assignments = {
-      reader = { role_definition_id_or_name = "Reader", principal_id = run.setup.object_id }
-    }
-  }
-}
-
-run "update_credential_under_readonly_lock" {
-  # A credential updated in place keeps its ID, and a ReadOnly lock blocks the write: the credential's
-  # lock_dependency changes with its body, so the lock is removed and created again around it.
-  variables {
-    name      = "id-mlz-it-${run.setup.suffix}"
-    parent_id = run.setup.resource_group_id
-    location  = run.setup.location
-    federated_identity_credentials = {
-      one = { issuer = "https://token.actions.githubusercontent.com", subject = "repo:example-org/example-repo:environment:one" }
-      two = { issuer = "https://token.actions.githubusercontent.com", subject = "repo:example-org/example-repo:environment:two-updated" }
-    }
-    lock = { kind = "ReadOnly" }
-    role_assignments = {
-      reader = { role_definition_id_or_name = "Reader", principal_id = run.setup.object_id }
+    diagnostic_settings = {
+      workspace = {
+        workspace_resource_id = run.setup.workspace_id
+        logs                  = [{ category = "BastionAuditLogs" }]
+        metrics               = [{ category = "AllMetrics" }]
+      }
     }
   }
 
   assert {
-    condition     = output.federated_identity_credential_resource_ids["two"] == run.readonly_lock.federated_identity_credential_resource_ids["two"] && module.interfaces.lock_resource_id != null
-    error_message = "The credential should be updated in place and the lock back."
+    condition     = output.public_ip_address == run.create.public_ip_address && module.interfaces.lock_resource_id != null
+    error_message = "The upgrade should keep the public IP address and the lock."
   }
 }
 
-run "credential_updated_in_azure" {
+run "upgraded_in_azure" {
   module {
     source = "./tests/integration/read"
   }
 
   variables {
-    credential_ids = run.update_credential_under_readonly_lock.federated_identity_credential_resource_ids
+    bastion_id = run.upgrade_to_standard.resource_id
   }
 
   assert {
-    condition     = output.subjects["two"] == "repo:example-org/example-repo:environment:two-updated"
-    error_message = "Azure should report the updated subject."
+    condition = alltrue([
+      output.sku == "Standard",
+      output.properties.scaleUnits == 3,
+      output.properties.disableCopyPaste,
+      output.properties.enableFileCopy,
+      output.properties.enableIpConnect,
+      output.properties.enableKerberos,
+      output.properties.enableShareableLink,
+      output.properties.enableTunneling,
+    ])
+    error_message = "Azure should report a Standard bastion host with three scale units and every Standard feature on."
   }
 }
 
-run "replace_locked_identity" {
-  # A new name replaces the identity. The lock goes first and the pause is replaced with the identity,
-  # so the old identity is deleted only after the lock deletion has propagated.
+run "features_off" {
   variables {
-    name      = "id-mlz-it-${run.setup.suffix}-renamed"
+    name      = "bas-mlz-bas-${run.setup.suffix}"
     parent_id = run.setup.resource_group_id
     location  = run.setup.location
-    federated_identity_credentials = {
-      one = { issuer = "https://token.actions.githubusercontent.com", subject = "repo:example-org/example-repo:environment:one" }
+    sku       = "Standard"
+    zones     = ["1", "2", "3"]
+    ip_configuration = {
+      subnet_id = run.setup.bastion_subnet_id
+      public_ip = { name = "pip-mlz-bas-${run.setup.suffix}" }
     }
     lock = { kind = "CanNotDelete" }
+    role_assignments = {
+      reader = { role_definition_id_or_name = "Reader", principal_id = run.setup.object_id }
+    }
+    diagnostic_settings = {
+      workspace = {
+        workspace_resource_id = run.setup.workspace_id
+        logs                  = [{ category = "BastionAuditLogs" }]
+        metrics               = [{ category = "AllMetrics" }]
+      }
+    }
+  }
+}
+
+run "features_off_in_azure" {
+  module {
+    source = "./tests/integration/read"
+  }
+
+  variables {
+    bastion_id = run.features_off.resource_id
   }
 
   assert {
-    condition     = output.name == "id-mlz-it-${run.setup.suffix}-renamed" && startswith(module.interfaces.lock_resource_id, "${output.resource_id}/providers/Microsoft.Authorization/locks/")
-    error_message = "The identity should be replaced and locked again."
+    condition = alltrue([
+      output.sku == "Standard",
+      output.properties.scaleUnits == 2,
+      !output.properties.disableCopyPaste,
+      !output.properties.enableFileCopy,
+      !output.properties.enableIpConnect,
+      !output.properties.enableKerberos,
+      !output.properties.enableShareableLink,
+      !output.properties.enableTunneling,
+    ])
+    error_message = "Azure should report every feature off and two scale units once they are no longer set."
   }
 }

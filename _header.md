@@ -1,41 +1,40 @@
-# az-tf-mlz-template
+# az-tf-mlz-bastion
 
-The template for Fortytwo's managed landing zone (MLZ) Terraform modules, `az-tf-mlz-<name>`: AzAPI
-only, shaped like the Azure Verified Modules (AVM) AzAPI modules, without telemetry.
+A Fortytwo managed landing zone (MLZ) module for Azure Bastion, in AzAPI: the bastion host
+(`Microsoft.Network/bastionHosts`) and its public IP address.
 
-## Start a module from this template
+- **Every tier** (`sku`, default `Standard`). `Developer` is free and shared, for one virtual network
+  (`virtual_network_id`, optionally `ip_rules`), for development and test. `Basic`, `Standard` and
+  `Premium` are dedicated hosts in the caller's `AzureBastionSubnet` (`ip_configuration`); they upgrade
+  into each other in place, and Azure supports no downgrade.
+- **A public IP address** created through
+  [`az-tf-mlz-public-ip`](https://github.com/fortytwoservices/az-tf-mlz-public-ip)
+  (`ip_configuration.public_ip`) or given by ID; none for `Developer` and for a private-only `Premium`
+  host (`private_only_enabled`).
+- **One variable per feature**, checked against the tier: copy and paste, file copy, IP-based
+  connection, Kerberos, shareable links, native client (`tunneling_enabled`), session recording and
+  scale units. Every feature is sent, off when unset, so turning one off reaches Azure. Session
+  recording's storage container is set in the portal, not here.
+- **Zones** are left out unless set, and a host in zones gets a zone-redundant public IP address, as
+  Azure requires. Changing the zones, private-only, `Developer` to or from a dedicated tier, the virtual
+  network or the IP configuration replaces the bastion host.
+- Lock, role assignments and diagnostic settings (`BastionAuditLogs`, `AllMetrics`), as in Azure Verified
+  Modules, through [`az-tf-mlz-interfaces`](https://github.com/fortytwoservices/az-tf-mlz-interfaces).
 
-1. Create the repository from the template and apply the repository settings:
+```hcl
+module "bastion" {
+  source = "git::https://github.com/fortytwoservices/az-tf-mlz-bastion.git?ref=vX.Y.Z"
 
-   ```sh
-   gh repo create fortytwoservices/az-tf-mlz-<name> --internal --template fortytwoservices/az-tf-mlz-template --clone
-   cd az-tf-mlz-<name>
-   scripts/repo-settings.sh fortytwoservices/az-tf-mlz-<name>
-   ```
+  name      = "bas-hub-sdc"
+  parent_id = "/subscriptions/<subscription>/resourceGroups/<resource group>"
+  location  = "swedencentral"
+  ip_configuration = {
+    subnet_id = "<AzureBastionSubnet ID>"
+    public_ip = { name = "pip-bas-hub-sdc" }
+  }
+  tunneling_enabled = true
+}
+```
 
-   CI reads the internal `az-tf-mlz-*` modules with the reader App `gh-az-tf-modules-reader`: set its
-   private key as the secret `AZ_TF_MODULE_READER_PRIVATE_KEY` (the script prints the command when it is
-   missing). If other modules will call this one, an org owner also adds the repository to the App's
-   selected repositories (organization settings, GitHub Apps, `gh-az-tf-modules-reader`, Configure).
-
-2. On a branch, replace the placeholder module (below) with the real one: root files, `modules/*`,
-   `examples/*` and the tests. Rewrite this `_header.md`; keep `_footer.md`. Delete `CHANGELOG.md` and
-   set `.release-please-manifest.json` to `{}`: both carry the template's own releases, and left in place
-   they make the module's first release something other than 0.1.0.
-3. Run `scripts/check.sh --fix`, then the Azure tests, and open a pull request whose title starts with
-   `feat:`. Merging it makes release-please open the release pull request for the first version.
-
-## The placeholder module
-
-A user-assigned identity with federated identity credentials. It is here to keep every pattern a
-module needs working and tested:
-
-- the primary resource `azapi_resource.this`, with `resource_types`, `ignore_body_changes`, `retry`,
-  `timeouts` and `tags`;
-- a child resource type as a submodule managing one instance (`modules/federated_identity_credential`),
-  called with `for_each` by the root, with its writes serialised on the parent (`locks`);
-- the lock and role assignment interfaces through
-  [`az-tf-mlz-interfaces`](https://github.com/fortytwoservices/az-tf-mlz-interfaces), with the
-  credentials passed as `lock_dependencies` so the lock is removed around their changes;
-- unit tests with mocked providers, integration tests in Azure, and an example that is applied,
-  planned again (no changes allowed) and destroyed.
+The examples deploy a Standard bastion host with a public IP address and diagnostics (`default`) and a
+Developer one (`developer`).

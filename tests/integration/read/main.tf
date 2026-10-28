@@ -1,4 +1,4 @@
-# Reads federated identity credentials straight from Azure; fails if one is gone.
+# Reads a bastion host straight from Azure, to check what the module sent reached it.
 terraform {
   required_providers {
     azapi = {
@@ -8,18 +8,24 @@ terraform {
   }
 }
 
-variable "credential_ids" {
-  type = map(string)
+variable "bastion_id" {
+  type = string
 }
 
-data "azapi_resource" "credential" {
-  for_each = var.credential_ids
-
-  type                   = "Microsoft.ManagedIdentity/userAssignedIdentities/federatedIdentityCredentials@2024-11-30"
-  resource_id            = each.value
-  response_export_values = ["properties.subject"]
+data "azapi_resource" "bastion" {
+  type                   = "Microsoft.Network/bastionHosts@2025-07-01"
+  resource_id            = var.bastion_id
+  response_export_values = ["properties", "sku", "zones"]
 }
 
-output "subjects" {
-  value = { for name, credential in data.azapi_resource.credential : name => credential.output.properties.subject }
+output "properties" {
+  value = data.azapi_resource.bastion.output.properties
+}
+
+output "sku" {
+  value = data.azapi_resource.bastion.output.sku.name
+}
+
+output "zones" {
+  value = try(data.azapi_resource.bastion.output.zones, null)
 }
